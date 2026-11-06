@@ -20,23 +20,55 @@ private const val ENDPOINT="https://moood.eyad2000515.workers.dev/palpay/ingest"
 private val executor=Executors.newSingleThreadExecutor()
 
 class MainActivity: Activity() {
- override fun onCreate(savedInstanceState:Bundle?){super.onCreate(savedInstanceState);render()}
- private fun render(){
-  val p=getSharedPreferences(PREF,MODE_PRIVATE)
-  val root=LinearLayout(this).apply{orientation=LinearLayout.VERTICAL;setPadding(32,35,32,20)}
-  val title=TextView(this).apply{text="مراقبة إشعارات PalPay — مخيم أبو عريبان";textSize=20f};root.addView(title)
-  fun field(hint:String, value:String):EditText{val e=EditText(this);e.hint=hint;e.setSingleLine(true);e.setText(value);root.addView(e);return e}
-  val pkg= "com.pcnc.wallet"
-  root.addView(TextView(this).apply{text="تطبيق PalPay المحدد: $pkg";textSize=16f})
-  val token=field("رمز الربط السري",p.getString("token","")?:"");token.inputType=InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
-  val info=TextView(this).apply{text="المعلّق محلياً: ${QueueStore.count(this@MainActivity)}\nتتم معالجة تحويلات PalPay الواردة فقط.\nالتحويلات تُرسل للمراجعة ولا تؤكد السداد."};root.addView(info)
-  root.addView(TextView(this).apply{text="سجل آخر الأحداث (بدون أسماء أو مبالغ):\n${EventLog.read(this@MainActivity)}";textSize=14f})
-  fun btn(label:String,action:()->Unit){val b=Button(this);b.text=label;b.setOnClickListener{action()};root.addView(b)}
-  btn("حفظ الإعدادات") {p.edit().putString("token",token.text.toString().trim()).apply();Toast.makeText(this,"تم الحفظ",Toast.LENGTH_SHORT).show()}
-  btn("فتح صلاحية قراءة الإشعارات") {startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))}
-  btn("إعادة إرسال الإشعارات المعلقة") {Sender.flush(this);Toast.makeText(this,"بدأت محاولة الإرسال",Toast.LENGTH_SHORT).show()}
-  btn("تحديث الحالة") {render()}
-  val scroll=ScrollView(this);scroll.addView(root);setContentView(scroll)
+ private lateinit var web:android.webkit.WebView
+ private val bridge=object {
+  @android.webkit.JavascriptInterface fun status():String {
+   val enabled=android.provider.Settings.Secure.getString(contentResolver,"enabled_notification_listeners").orEmpty()
+   val active=enabled.contains(packageName)
+   return JSONObject().put("enabled",active).put("pending",QueueStore.count(this@MainActivity))
+    .put("events",EventLog.read(this@MainActivity))
+    .put("configured",!getSharedPreferences(PREF,MODE_PRIVATE).getString("token","").isNullOrBlank()).toString()
+  }
+  @android.webkit.JavascriptInterface fun saveToken(token:String){
+   getSharedPreferences(PREF,MODE_PRIVATE).edit().putString("token",token.trim()).apply()
+   runOnUiThread{refresh()}
+  }
+  @android.webkit.JavascriptInterface fun permission(){
+   runOnUiThread{startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))}
+  }
+  @android.webkit.JavascriptInterface fun retry(){Sender.flush(this@MainActivity);runOnUiThread{refresh()}}
+  @android.webkit.JavascriptInterface fun refresh(){runOnUiThread{
+   web.evaluateJavascript("window.updateStatus("+status()+")",null)
+  }}
+  @android.webkit.JavascriptInterface fun chooseScreenshot(){runOnUiThread{
+   val intent=Intent(Intent.ACTION_GET_CONTENT).apply{type="image/*";addCategory(Intent.CATEGORY_OPENABLE)}
+   startActivityForResult(Intent.createChooser(intent,"اختيار لقطة الحوالة"),81)
+  }}
+ }
+ override fun onCreate(savedInstanceState:Bundle?){
+  super.onCreate(savedInstanceState)
+  window.statusBarColor=android.graphics.Color.rgb(12,37,61)
+  window.navigationBarColor=android.graphics.Color.rgb(12,37,61)
+  web=android.webkit.WebView(this).apply{
+   settings.javaScriptEnabled=true
+   settings.allowFileAccess=false
+   settings.allowContentAccess=false
+   settings.domStorageEnabled=false
+   addJavascriptInterface(bridge,"Bridge")
+   webViewClient=object:android.webkit.WebViewClient(){
+    override fun shouldOverrideUrlLoading(v:android.webkit.WebView?,r:android.webkit.WebResourceRequest?):Boolean=true
+   }
+  }
+  setContentView(web)
+  web.loadUrl("file:///android_asset/dashboard.html")
+ }
+ override fun onResume(){super.onResume();if(::web.isInitialized)web.postDelayed({bridge.refresh()},400)}
+ override fun onActivityResult(requestCode:Int,resultCode:Int,data:Intent?){
+  super.onActivityResult(requestCode,resultCode,data)
+  if(requestCode==81&&resultCode==RESULT_OK){
+   val selected=data?.data?.lastPathSegment.orEmpty().take(100)
+   web.evaluateJavascript("window.screenshotChosen("+JSONObject.quote(selected)+")",null)
+  }
  }
 }
 
